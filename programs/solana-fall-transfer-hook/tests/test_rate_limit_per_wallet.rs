@@ -1,7 +1,15 @@
 #[allow(dead_code)]
 mod helpers;
 
-use anchor_lang::solana_program::system_instruction;
+use anchor_lang::{
+    InstructionData,
+    ToAccountMetas,
+    solana_program::{
+        instruction::{AccountMeta, Instruction},
+        system_instruction,
+    },
+};
+use anchor_spl::token_2022::Token2022;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
@@ -11,7 +19,6 @@ use helpers::{
     setup_mint_and_extra_metas,
     create_ata,
     mint_tokens,
-    build_transfer_with_hook_ix,
     send_ix,
 };
 
@@ -90,19 +97,63 @@ fn test_two_wallets_can_transfer_1000000_in_same_hour() {
     );
 
     // First wallet transfers 1,000,000.
-    let first_transfer = build_transfer_with_hook_ix(
-        &first_ata,
-        &first_destination_ata,
-        &mint.pubkey(),
-        &payer.pubkey(),
+    let hook_program = program_id;
+    let extra_account_meta_list = Pubkey::find_program_address(
+        &[b"extra-account-metas", mint.pubkey().as_ref()],
         &program_id,
-        1_000_000,
-        0,
-    );
+    ).0;
+    
+    let first_rate_limit = Pubkey::find_program_address(
+        &[
+            b"rate_limit",
+            mint.pubkey().as_ref(),
+            payer.pubkey().as_ref(),
+            ],
+            &program_id,
+    ).0;
+
+    let first_ix = Instruction {
+        program_id: token_mover::id(),
+        accounts: token_mover::accounts::TransferWithHook {
+            owner: payer.pubkey(),
+            source_token: first_ata,
+            mint: mint.pubkey(),
+            destination_token: first_destination_ata,
+            token_program: Token2022::id(),
+        }
+        .to_account_metas(None),
+        data: token_mover::instruction::TransferWithHook {
+            amount: 1_000_000,
+            decimals: 0,
+        }
+        .data(),
+    };
+
+// Hook accounts must be pushed as remaining accounts.
+// Order: hook program, extra-account-meta-list, rate-limit.
+    let mut first_ix = first_ix;
+
+    first_ix
+    .accounts
+    .push(AccountMeta::new_readonly(hook_program, false));
+
+    first_ix
+    .accounts
+    .push(AccountMeta::new_readonly(
+        extra_account_meta_list,
+        false,
+    ));
+
+    first_ix
+    .accounts
+    .push(AccountMeta::new(
+        first_rate_limit,
+        false,
+    ));
 
     send_ix(
         &mut svm,
-        first_transfer,
+        first_ix,
         &payer,
         &[&payer],
     );
@@ -119,20 +170,55 @@ fn test_two_wallets_can_transfer_1000000_in_same_hour() {
     );
 
     // Second wallet transfers 1,000,000 during the SAME hour.
-    let second_transfer = build_transfer_with_hook_ix(
-        &second_ata,
-        &second_destination_ata,
-        &mint.pubkey(),
-        &second_wallet.pubkey(),
-        &program_id,
-        1_000_000,
-        0,
-    );
+    let second_rate_limit = Pubkey::find_program_address(
+        &[
+            b"rate_limit",
+            mint.pubkey().as_ref(),
+            second_wallet.pubkey().as_ref(),
+            ],
+            &program_id,
+    ).0;
+
+    let second_ix = Instruction {
+        program_id: token_mover::id(),
+        accounts: token_mover::accounts::TransferWithHook {
+            owner: second_wallet.pubkey(),
+            source_token: second_ata,
+            mint: mint.pubkey(),
+            destination_token: second_destination_ata,
+            token_program: Token2022::id(),
+        }
+        .to_account_metas(None),
+        data: token_mover::instruction::TransferWithHook {
+            amount: 1_000_000,
+            decimals: 0,
+        }
+        .data(),
+    };
+
+    let mut second_ix = second_ix;
+
+    second_ix
+    .accounts
+    .push(AccountMeta::new_readonly(hook_program, false));
+
+    second_ix
+    .accounts
+    .push(AccountMeta::new_readonly(
+        extra_account_meta_list,
+        false,
+    ));
+
+    second_ix
+    .accounts
+    .push(AccountMeta::new(
+        second_rate_limit,
+        false,
+    ));
 
     send_ix(
         &mut svm,
-        second_transfer,
+        second_ix,
         &second_wallet,
         &[&second_wallet],
     );
-}
